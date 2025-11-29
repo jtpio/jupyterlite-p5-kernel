@@ -304,7 +304,13 @@ export class P5Kernel extends BaseKernel {
       data: {
         'text/html': `<iframe width="${width}" height="${height}" frameborder="0" srcdoc="${escapedSrcdoc}"></iframe>`
       },
-      metadata: {}
+      metadata: {
+        'text/html': {
+          isolated: true,
+          width,
+          height
+        }
+      }
     };
   }
 
