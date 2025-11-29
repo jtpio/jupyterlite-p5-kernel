@@ -4216,6 +4216,7 @@ __metadata:
     "@jupyterlite/services": ^0.7.0
     "@types/jest": ^26.0.10
     jest: ^26.4.2
+    meriyah: ^4.3.9
     rimraf: ~5.0.1
     ts-jest: ^26.3.0
     typescript: ~5.0.2
@@ -13638,6 +13639,13 @@ __metadata:
   version: 1.4.1
   resolution: "merge2@npm:1.4.1"
   checksum: 7268db63ed5169466540b6fb947aec313200bcf6d40c5ab722c22e242f651994619bcd85601602972d3c85bd2cc45a358a4c61937e9f11a061919a1da569b0c2
+  languageName: node
+  linkType: hard
+
+"meriyah@npm:^4.3.9":
+  version: 4.5.0
+  resolution: "meriyah@npm:4.5.0"
+  checksum: 07b3225ac4528a2572d70ef6499fc97b1934558d49f968b14f167078439e7bc5e5da09fdb8bee9f8e16258fdf9822259054e6d312bd668c5678dfdf2849e3c6a
   languageName: node
   linkType: hard
 

@@ -4,6 +4,8 @@ import { BaseKernel, type IKernel } from '@jupyterlite/services';
 
 import { PromiseDelegate } from '@lumino/coreutils';
 
+import { JavaScriptExecutor } from './executor';
+
 /**
  * A kernel for making p5 sketches in the browser
  */
@@ -39,6 +41,12 @@ export class P5Kernel extends BaseKernel {
     this._iframe.onload = async () => {
       await this._initIFrame();
       this._eval(this._bootstrap);
+
+      // Initialize the executor with the iframe's window
+      if (this._iframe.contentWindow) {
+        this._executor = new JavaScriptExecutor(this._iframe.contentWindow);
+      }
+
       this._ready.resolve();
       window.addEventListener('message', (e: MessageEvent) => {
         const msg = e.data;
@@ -132,15 +140,37 @@ export class P5Kernel extends BaseKernel {
     }
 
     try {
-      const result = this._eval(code);
+      // Use the executor to create an async function from the code
+      if (!this._executor) {
+        throw new Error('Executor not initialized');
+      }
 
-      this.publishExecuteResult({
-        execution_count: this.executionCount,
-        data: {
-          'text/plain': result
-        },
-        metadata: {}
-      });
+      const { asyncFunction, withReturn } =
+        this._executor.makeAsyncFromCode(code);
+
+      // Execute the async function in the iframe context
+      const evalFunc = new Function(
+        'window',
+        'asyncFunc',
+        'return asyncFunc.call(window);'
+      );
+      const resultPromise = evalFunc(this._iframe.contentWindow, asyncFunction);
+
+      let data: any = {};
+
+      if (withReturn) {
+        const resultHolder = await resultPromise;
+        const result = resultHolder[0];
+        data = this._executor.getMimeBundle(result);
+
+        this.publishExecuteResult({
+          execution_count: this.executionCount,
+          data,
+          metadata: {}
+        });
+      } else {
+        await resultPromise;
+      }
 
       // only store the input if the execution is successful
       if (!code.trim().startsWith('%')) {
@@ -151,12 +181,13 @@ export class P5Kernel extends BaseKernel {
       // of existing sketches
 
       const magics = await this._magics();
-      const { data, metadata } = magics;
+      const magicsData = magics.data;
+      const magicsMetadata = magics.metadata;
       this._parentHeaders.forEach(h => {
         this.updateDisplayData(
           {
-            data,
-            metadata,
+            data: magicsData,
+            metadata: magicsMetadata,
             transient
           },
           h
@@ -169,20 +200,26 @@ export class P5Kernel extends BaseKernel {
         user_expressions: {}
       };
     } catch (e) {
-      const { name, stack, message } = e as any as Error;
+      const error = e as Error;
+      const { name, message } = error;
+
+      // Use executor to clean stack trace
+      const cleanedStack = this._executor
+        ? this._executor.cleanStackTrace(error)
+        : error.stack || '';
 
       this.publishExecuteError({
-        ename: name,
-        evalue: message,
-        traceback: [`${stack}`]
+        ename: name || 'Error',
+        evalue: message || '',
+        traceback: [cleanedStack]
       });
 
       return {
         status: 'error',
         execution_count: this.executionCount,
-        ename: name,
-        evalue: message,
-        traceback: [`${stack}`]
+        ename: name || 'Error',
+        evalue: message || '',
+        traceback: [cleanedStack]
       };
     }
   }
@@ -195,36 +232,67 @@ export class P5Kernel extends BaseKernel {
   async completeRequest(
     content: KernelMessage.ICompleteRequestMsg['content']
   ): Promise<KernelMessage.ICompleteReplyMsg['content']> {
-    // naive completion on window names only
-    // TODO: improve and move logic to the iframe
-    const vars = this._evalFunc(
-      this._iframe.contentWindow,
-      'Object.keys(window)'
-    ) as string[];
+    if (!this._executor) {
+      return {
+        matches: [],
+        cursor_start: content.cursor_pos,
+        cursor_end: content.cursor_pos,
+        metadata: {},
+        status: 'ok'
+      };
+    }
+
     const { code, cursor_pos } = content;
-    const words = code.slice(0, cursor_pos).match(/(\w+)$/) ?? [];
-    const word = words[0] ?? '';
-    const matches = vars.filter(v => v.startsWith(word));
+    const result = this._executor.completeRequest(code, cursor_pos);
 
     return {
-      matches,
-      cursor_start: cursor_pos - word.length,
-      cursor_end: cursor_pos,
+      matches: result.matches,
+      cursor_start: result.cursorStart,
+      cursor_end: result.cursorEnd || cursor_pos,
       metadata: {},
-      status: 'ok'
+      status: result.status === 'error' ? 'ok' : 'ok'
     };
   }
 
   async inspectRequest(
     content: KernelMessage.IInspectRequestMsg['content']
   ): Promise<KernelMessage.IInspectReplyMsg['content']> {
-    throw new Error('not implemented');
+    if (!this._executor) {
+      return {
+        status: 'ok',
+        found: false,
+        data: {},
+        metadata: {}
+      };
+    }
+
+    const { code, cursor_pos, detail_level } = content;
+    const result = this._executor.inspect(code, cursor_pos, detail_level);
+
+    return {
+      status: 'ok',
+      found: result.found,
+      data: result.data,
+      metadata: result.metadata
+    };
   }
 
   async isCompleteRequest(
     content: KernelMessage.IIsCompleteRequestMsg['content']
   ): Promise<KernelMessage.IIsCompleteReplyMsg['content']> {
-    throw new Error('not implemented');
+    if (!this._executor) {
+      return {
+        status: 'unknown'
+      };
+    }
+
+    const { code } = content;
+    const result = this._executor.isComplete(code);
+
+    return {
+      status: result.status,
+      indent: result.indent || ''
+    };
   }
 
   async commInfoRequest(
@@ -362,6 +430,7 @@ export class P5Kernel extends BaseKernel {
   private _ready = new PromiseDelegate<void>();
   private _parentHeaders: KernelMessage.IHeader<KernelMessage.MessageType>[] =
     [];
+  private _executor?: JavaScriptExecutor;
 }
 
 /**
