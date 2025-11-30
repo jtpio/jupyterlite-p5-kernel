@@ -4,7 +4,7 @@ import { BaseKernel, type IKernel } from '@jupyterlite/services';
 
 import { PromiseDelegate } from '@lumino/coreutils';
 
-import { JavaScriptExecutor } from './executor';
+import { JavaScriptExecutor, IImportInfo } from './executor';
 
 /**
  * A kernel for making p5 sketches in the browser
@@ -175,6 +175,15 @@ export class P5Kernel extends BaseKernel {
       // only store the input if the execution is successful
       if (!code.trim().startsWith('%')) {
         this._inputs.push(code);
+
+        // Extract and track imports from the code
+        const imports = this._executor.extractImports(code);
+        for (const imp of imports) {
+          // Avoid duplicate imports by checking the source
+          if (!this._imports.some(existing => existing.source === imp.source)) {
+            this._imports.push(imp);
+          }
+        }
       }
 
       // update existing displays since the executed code might affect the rendering
@@ -334,6 +343,11 @@ export class P5Kernel extends BaseKernel {
   private async _magics(
     code = ''
   ): Promise<KernelMessage.IExecuteResultMsg['content']> {
+    // Generate import loading code
+    const importCode = this._executor
+      ? this._executor.generateImportCode(this._imports)
+      : '';
+
     const input = this._inputs
       .map(c => {
         const exec = ['try {', `window.eval(\`${c}\`);`, '} catch(e) {}'].join(
@@ -342,8 +356,11 @@ export class P5Kernel extends BaseKernel {
         return exec;
       })
       .join('\n');
+
+    // Create an async wrapper that first loads imports, then runs user code
     const script = `
-        ${this._bootstrap}.then(() => {
+        ${this._bootstrap}.then(async () => {
+          ${importCode}
           ${input}
           window.__globalP5._start();
         })
@@ -427,6 +444,7 @@ export class P5Kernel extends BaseKernel {
     'return window.eval(code);'
   );
   private _inputs: string[] = [];
+  private _imports: IImportInfo[] = [];
   private _ready = new PromiseDelegate<void>();
   private _parentHeaders: KernelMessage.IHeader<KernelMessage.MessageType>[] =
     [];

@@ -31,6 +31,22 @@ export interface IAsyncCodeResult {
 }
 
 /**
+ * Information about an extracted import
+ */
+export interface IImportInfo {
+  /** The original import source (e.g., 'canvas-confetti') */
+  source: string;
+  /** The transformed URL (e.g., 'https://cdn.jsdelivr.net/npm/canvas-confetti/+esm') */
+  url: string;
+  /** The local variable name for default import */
+  defaultImport?: string;
+  /** The local variable name for namespace import */
+  namespaceImport?: string;
+  /** Named imports: { importedName: localName } */
+  namedImports: Record<string, string>;
+}
+
+/**
  * Result of code completion
  */
 export interface ICompletionResult {
@@ -393,6 +409,114 @@ export class JavaScriptExecutor {
       asyncFunction,
       withReturn
     };
+  }
+
+  /**
+   * Extract import information from code without executing it.
+   * Used to track imports for sketch generation.
+   */
+  extractImports(code: string): IImportInfo[] {
+    if (code.length === 0) {
+      return [];
+    }
+
+    try {
+      const ast = parseScript(code, {
+        ranges: true,
+        module: true
+      });
+
+      const imports: IImportInfo[] = [];
+
+      for (const node of ast.body) {
+        if (node.type === 'ImportDeclaration') {
+          const source = String(node.source.value);
+          const url = this.transformImportSource(source);
+
+          const importInfo: IImportInfo = {
+            source,
+            url,
+            namedImports: {}
+          };
+
+          for (const specifier of node.specifiers) {
+            if (specifier.type === 'ImportDefaultSpecifier') {
+              importInfo.defaultImport = specifier.local.name;
+            } else if (specifier.type === 'ImportNamespaceSpecifier') {
+              importInfo.namespaceImport = specifier.local.name;
+            } else if (specifier.type === 'ImportSpecifier') {
+              if (specifier.imported.name === 'default') {
+                importInfo.defaultImport = specifier.local.name;
+              } else {
+                importInfo.namedImports[specifier.imported.name] =
+                  specifier.local.name;
+              }
+            }
+          }
+
+          imports.push(importInfo);
+        }
+      }
+
+      return imports;
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Generate async JavaScript code to load imports and assign them to window.
+   * This is used when generating the sketch iframe.
+   */
+  generateImportCode(imports: IImportInfo[]): string {
+    if (imports.length === 0) {
+      return '';
+    }
+
+    const lines: string[] = [];
+
+    for (const imp of imports) {
+      if (imp.defaultImport) {
+        lines.push(
+          `const { default: ${imp.defaultImport} } = await import("${imp.url}");`
+        );
+        lines.push(`window["${imp.defaultImport}"] = ${imp.defaultImport};`);
+      }
+
+      if (imp.namespaceImport) {
+        lines.push(
+          `const ${imp.namespaceImport} = await import("${imp.url}");`
+        );
+        lines.push(
+          `window["${imp.namespaceImport}"] = ${imp.namespaceImport};`
+        );
+      }
+
+      const namedKeys = Object.keys(imp.namedImports);
+      if (namedKeys.length > 0) {
+        const destructure = namedKeys
+          .map(k =>
+            k === imp.namedImports[k] ? k : `${k}: ${imp.namedImports[k]}`
+          )
+          .join(', ');
+        lines.push(`const { ${destructure} } = await import("${imp.url}");`);
+        for (const importedName of namedKeys) {
+          const localName = imp.namedImports[importedName];
+          lines.push(`window["${localName}"] = ${localName};`);
+        }
+      }
+
+      // Side-effect only import (no specifiers)
+      if (
+        !imp.defaultImport &&
+        !imp.namespaceImport &&
+        Object.keys(imp.namedImports).length === 0
+      ) {
+        lines.push(`await import("${imp.url}");`);
+      }
+    }
+
+    return lines.join('\n');
   }
 
   /**
@@ -895,23 +1019,116 @@ export class JavaScriptExecutor {
       }
     }
 
-    const matches: string[] = [];
-
-    // Loop over all properties
-    try {
-      for (const key in rootObject) {
-        if (key.startsWith(toMatch)) {
-          matches.push(key);
-        }
-      }
-    } catch {
-      // Ignore errors accessing properties
-    }
+    // Collect all properties including from prototype chain
+    const matches = this.getAllProperties(rootObject, toMatch);
 
     return {
       matches,
       cursorStart
     };
+  }
+
+  /**
+   * Get all properties of an object including inherited ones
+   * Filters by prefix and returns sorted unique matches
+   */
+  private getAllProperties(obj: any, prefix: string): string[] {
+    const seen = new Set<string>();
+    const matches: string[] = [];
+    const lowerPrefix = prefix.toLowerCase();
+
+    // Helper to add matching properties
+    const addMatching = (props: string[]) => {
+      for (const prop of props) {
+        if (!seen.has(prop) && prop.startsWith(prefix)) {
+          seen.add(prop);
+          matches.push(prop);
+        }
+      }
+    };
+
+    // Helper to add case-insensitive matches (lower priority)
+    const addCaseInsensitive = (props: string[]) => {
+      for (const prop of props) {
+        if (
+          !seen.has(prop) &&
+          prop.toLowerCase().startsWith(lowerPrefix) &&
+          !prop.startsWith(prefix)
+        ) {
+          seen.add(prop);
+          matches.push(prop);
+        }
+      }
+    };
+
+    try {
+      // Walk up the prototype chain
+      let current = obj;
+      while (current !== null && current !== undefined) {
+        try {
+          // Get own property names (includes non-enumerable)
+          const ownProps = Object.getOwnPropertyNames(current);
+          addMatching(ownProps);
+
+          // Also get enumerable properties from for...in
+          for (const key in current) {
+            if (!seen.has(key) && key.startsWith(prefix)) {
+              seen.add(key);
+              matches.push(key);
+            }
+          }
+        } catch {
+          // Some objects may throw on getOwnPropertyNames
+        }
+
+        // Move up prototype chain
+        try {
+          current = Object.getPrototypeOf(current);
+        } catch {
+          break;
+        }
+      }
+
+      // Add case-insensitive matches as secondary results
+      current = obj;
+      while (current !== null && current !== undefined) {
+        try {
+          const ownProps = Object.getOwnPropertyNames(current);
+          addCaseInsensitive(ownProps);
+        } catch {
+          // Ignore
+        }
+        try {
+          current = Object.getPrototypeOf(current);
+        } catch {
+          break;
+        }
+      }
+    } catch {
+      // Fallback to simple for...in if above fails
+      try {
+        for (const key in obj) {
+          if (key.startsWith(prefix)) {
+            matches.push(key);
+          }
+        }
+      } catch {
+        // Ignore
+      }
+    }
+
+    // Sort matches: exact prefix matches first, then alphabetically
+    return matches.sort((a, b) => {
+      const aExact = a.startsWith(prefix);
+      const bExact = b.startsWith(prefix);
+      if (aExact && !bExact) {
+        return -1;
+      }
+      if (!aExact && bExact) {
+        return 1;
+      }
+      return a.localeCompare(b);
+    });
   }
 
   /**
@@ -1197,11 +1414,160 @@ export class JavaScriptExecutor {
 
   /**
    * Provide inspection info for built-in objects
+   * First tries runtime lookup, then falls back to predefined docs
    */
   private inspectBuiltin(
     expression: string,
-    _detailLevel: number
+    detailLevel: number
   ): IInspectResult {
+    // First, try to find the expression in the global scope at runtime
+    const runtimeResult = this.inspectAtRuntime(expression, detailLevel);
+    if (runtimeResult.found) {
+      return runtimeResult;
+    }
+
+    // Fall back to predefined documentation
+    const doc = this.getBuiltinDocumentation(expression);
+    if (doc) {
+      return {
+        found: true,
+        data: {
+          'text/plain': `${expression}: ${doc}`,
+          'text/markdown': `**${expression}**\n\n${doc}`
+        },
+        metadata: {}
+      };
+    }
+
+    // Try to find similar names in global scope for suggestions
+    const suggestions = this.findSimilarNames(expression);
+    if (suggestions.length > 0) {
+      return {
+        found: true,
+        data: {
+          'text/plain': `'${expression}' not found. Did you mean: ${suggestions.join(', ')}?`,
+          'text/markdown': `\`${expression}\` not found.\n\n**Did you mean:**\n${suggestions.map(s => `- \`${s}\``).join('\n')}`
+        },
+        metadata: {}
+      };
+    }
+
+    return {
+      found: false,
+      data: {},
+      metadata: {}
+    };
+  }
+
+  /**
+   * Try to inspect an expression by looking it up in the global scope at runtime
+   */
+  private inspectAtRuntime(
+    expression: string,
+    detailLevel: number
+  ): IInspectResult {
+    try {
+      // Try to find the value in global scope
+      const parts = expression.split('.');
+      let value: any = this.globalScope;
+
+      for (const part of parts) {
+        if (value === null || value === undefined) {
+          return { found: false, data: {}, metadata: {} };
+        }
+        const hasProp =
+          part in value || Object.prototype.hasOwnProperty.call(value, part);
+        if (hasProp) {
+          value = value[part];
+        } else {
+          return { found: false, data: {}, metadata: {} };
+        }
+      }
+
+      // Build inspection data with additional documentation if available
+      const inspectionData = this.buildInspectionData(
+        expression,
+        value,
+        detailLevel
+      );
+
+      // Add predefined documentation if available
+      const doc = this.getBuiltinDocumentation(expression);
+      if (doc) {
+        const mdContent = inspectionData['text/markdown'] || '';
+        inspectionData['text/markdown'] = mdContent + `\n\n---\n\n📖 ${doc}`;
+        const plainContent = inspectionData['text/plain'] || '';
+        inspectionData['text/plain'] = plainContent + `\n\nDoc: ${doc}`;
+      }
+
+      return {
+        found: true,
+        data: inspectionData,
+        metadata: {}
+      };
+    } catch {
+      return { found: false, data: {}, metadata: {} };
+    }
+  }
+
+  /**
+   * Find similar names in global scope for suggestions
+   */
+  private findSimilarNames(expression: string): string[] {
+    const suggestions: string[] = [];
+    const lowerExpr = expression.toLowerCase();
+
+    try {
+      // Check global scope for similar names
+      const globalProps = this.getAllProperties(this.globalScope, '');
+
+      for (const prop of globalProps) {
+        // Check for similar names (Levenshtein-like simple check)
+        const lowerProp = prop.toLowerCase();
+        if (
+          lowerProp.includes(lowerExpr) ||
+          lowerExpr.includes(lowerProp) ||
+          this.isSimilar(lowerExpr, lowerProp)
+        ) {
+          suggestions.push(prop);
+          if (suggestions.length >= 5) {
+            break;
+          }
+        }
+      }
+    } catch {
+      // Ignore errors
+    }
+
+    return suggestions;
+  }
+
+  /**
+   * Simple similarity check for two strings
+   */
+  private isSimilar(a: string, b: string): boolean {
+    // Check if strings differ by only 1-2 characters
+    if (Math.abs(a.length - b.length) > 2) {
+      return false;
+    }
+
+    let differences = 0;
+    const maxLen = Math.max(a.length, b.length);
+    for (let i = 0; i < maxLen; i++) {
+      if (a[i] !== b[i]) {
+        differences++;
+        if (differences > 2) {
+          return false;
+        }
+      }
+    }
+    return differences <= 2;
+  }
+
+  /**
+   * Get predefined documentation for built-in or common p5.js functions
+   */
+  private getBuiltinDocumentation(expression: string): string | null {
     // Common JavaScript built-ins documentation
     const builtins: Record<string, string> = {
       console:
@@ -1219,53 +1585,124 @@ export class JavaScriptExecutor {
         'The Promise object represents the eventual completion of an async operation.',
       Map: 'The Map object holds key-value pairs and remembers the original insertion order.',
       Set: 'The Set object lets you store unique values of any type.',
-      // p5.js specific
+      // p5.js specific - Drawing
       createCanvas:
-        'Creates a canvas element (p5.js). Usage: createCanvas(width, height)',
-      background: 'Sets the background color of the canvas (p5.js).',
-      fill: 'Sets the fill color for shapes (p5.js).',
-      stroke: 'Sets the stroke color for shapes (p5.js).',
-      rect: 'Draws a rectangle (p5.js). Usage: rect(x, y, width, height)',
-      ellipse: 'Draws an ellipse (p5.js). Usage: ellipse(x, y, width, height)',
-      line: 'Draws a line (p5.js). Usage: line(x1, y1, x2, y2)',
+        'Creates a canvas element (p5.js). Usage: createCanvas(width, height, [renderer])',
+      resizeCanvas:
+        'Resizes the canvas to given width and height (p5.js). Usage: resizeCanvas(width, height, [noRedraw])',
+      background:
+        'Sets the background color of the canvas (p5.js). Usage: background(color) or background(r, g, b, [a])',
+      clear: 'Clears the canvas (p5.js).',
+      fill: 'Sets the fill color for shapes (p5.js). Usage: fill(color) or fill(r, g, b, [a])',
+      noFill: 'Disables filling shapes (p5.js).',
+      stroke:
+        'Sets the stroke color for shapes (p5.js). Usage: stroke(color) or stroke(r, g, b, [a])',
+      noStroke: 'Disables drawing the stroke (p5.js).',
+      strokeWeight:
+        'Sets the width of the stroke (p5.js). Usage: strokeWeight(weight)',
+      // p5.js specific - Shapes
+      rect: 'Draws a rectangle (p5.js). Usage: rect(x, y, width, [height], [tl], [tr], [br], [bl])',
+      ellipse:
+        'Draws an ellipse (p5.js). Usage: ellipse(x, y, width, [height])',
       circle: 'Draws a circle (p5.js). Usage: circle(x, y, diameter)',
-      text: 'Draws text to the canvas (p5.js). Usage: text(str, x, y)',
+      line: 'Draws a line (p5.js). Usage: line(x1, y1, x2, y2)',
+      point: 'Draws a point (p5.js). Usage: point(x, y)',
+      triangle:
+        'Draws a triangle (p5.js). Usage: triangle(x1, y1, x2, y2, x3, y3)',
+      quad: 'Draws a quadrilateral (p5.js). Usage: quad(x1, y1, x2, y2, x3, y3, x4, y4)',
+      arc: 'Draws an arc (p5.js). Usage: arc(x, y, w, h, start, stop, [mode], [detail])',
+      bezier:
+        'Draws a Bezier curve (p5.js). Usage: bezier(x1, y1, x2, y2, x3, y3, x4, y4)',
+      // p5.js specific - Text
+      text: 'Draws text to the canvas (p5.js). Usage: text(str, x, y, [x2], [y2])',
+      textSize: 'Sets the font size (p5.js). Usage: textSize(size)',
+      textFont: 'Sets the font (p5.js). Usage: textFont(font, [size])',
+      textAlign:
+        'Sets text alignment (p5.js). Usage: textAlign(horizAlign, [vertAlign])',
+      textWidth: 'Returns the width of text (p5.js). Usage: textWidth(str)',
+      // p5.js specific - Transform
+      translate: 'Moves the origin point (p5.js). Usage: translate(x, y, [z])',
+      rotate: 'Rotates around the origin (p5.js). Usage: rotate(angle)',
+      scale:
+        'Scales the coordinate system (p5.js). Usage: scale(s) or scale(x, y, [z])',
+      push: 'Saves the current drawing style settings and transformations (p5.js).',
+      pop: 'Restores the drawing style settings saved by push() (p5.js).',
+      // p5.js specific - Events
       setup: 'Called once when the program starts (p5.js function).',
       draw: 'Called continuously to update the canvas (p5.js function).',
+      preload: 'Called before setup() to load assets (p5.js function).',
+      mousePressed: 'Called once when a mouse button is pressed (p5.js event).',
+      mouseReleased:
+        'Called once when a mouse button is released (p5.js event).',
+      mouseMoved: 'Called when the mouse moves (p5.js event).',
+      mouseDragged: 'Called when the mouse moves while pressed (p5.js event).',
+      keyPressed: 'Called once when a key is pressed (p5.js event).',
+      keyReleased: 'Called once when a key is released (p5.js event).',
+      keyTyped: 'Called once when a key is typed (p5.js event).',
+      // p5.js specific - Variables
       mouseX: 'Current horizontal position of the mouse (p5.js).',
       mouseY: 'Current vertical position of the mouse (p5.js).',
+      pmouseX: 'Previous horizontal position of the mouse (p5.js).',
+      pmouseY: 'Previous vertical position of the mouse (p5.js).',
+      mouseButton:
+        'Current mouse button pressed (LEFT, RIGHT, CENTER) (p5.js).',
+      mouseIsPressed: 'True if mouse is currently pressed (p5.js).',
+      key: 'Most recent key pressed (p5.js).',
+      keyCode: 'Key code of the most recent key pressed (p5.js).',
+      keyIsPressed: 'True if any key is currently pressed (p5.js).',
       width: 'Width of the canvas (p5.js).',
       height: 'Height of the canvas (p5.js).',
       frameCount:
         'Number of frames displayed since the program started (p5.js).',
-      random: 'Returns a random floating-point number (p5.js).',
-      noise: 'Returns Perlin noise value (p5.js).',
-      map: 'Re-maps a number from one range to another (p5.js).',
+      frameRate:
+        'Gets or sets the frame rate (p5.js). Usage: frameRate() or frameRate(fps)',
+      deltaTime: 'Time in milliseconds since the last frame (p5.js).',
+      // p5.js specific - Math
+      random:
+        'Returns a random floating-point number (p5.js). Usage: random([min], [max]) or random(choices)',
+      randomSeed: 'Sets the seed for random() (p5.js). Usage: randomSeed(seed)',
+      noise: 'Returns Perlin noise value (p5.js). Usage: noise(x, [y], [z])',
+      noiseSeed: 'Sets the seed for noise() (p5.js). Usage: noiseSeed(seed)',
+      noiseDetail:
+        'Sets octaves and falloff for noise (p5.js). Usage: noiseDetail(lod, falloff)',
+      map: 'Re-maps a number from one range to another (p5.js). Usage: map(value, start1, stop1, start2, stop2, [withinBounds])',
+      constrain:
+        'Constrains a value between min and max (p5.js). Usage: constrain(n, low, high)',
+      lerp: 'Linear interpolation between two values (p5.js). Usage: lerp(start, stop, amt)',
+      dist: 'Distance between two points (p5.js). Usage: dist(x1, y1, x2, y2)',
+      mag: 'Magnitude of a vector (p5.js). Usage: mag(x, y)',
+      // p5.js specific - Color
       color:
-        'Creates a color object (p5.js). Usage: color(r, g, b) or color(gray)',
-      push: 'Saves the current drawing style settings (p5.js).',
-      pop: 'Restores the drawing style settings saved by push() (p5.js).',
-      translate: 'Moves the origin point (p5.js).',
-      rotate: 'Rotates around the origin (p5.js).',
-      scale: 'Scales the coordinate system (p5.js).'
+        'Creates a color object (p5.js). Usage: color(gray, [a]) or color(r, g, b, [a]) or color(colorString)',
+      red: 'Extracts red value from a color (p5.js). Usage: red(color)',
+      green: 'Extracts green value from a color (p5.js). Usage: green(color)',
+      blue: 'Extracts blue value from a color (p5.js). Usage: blue(color)',
+      alpha: 'Extracts alpha value from a color (p5.js). Usage: alpha(color)',
+      hue: 'Extracts hue value from a color (p5.js). Usage: hue(color)',
+      saturation:
+        'Extracts saturation from a color (p5.js). Usage: saturation(color)',
+      brightness:
+        'Extracts brightness from a color (p5.js). Usage: brightness(color)',
+      lerpColor:
+        'Interpolates between two colors (p5.js). Usage: lerpColor(c1, c2, amt)',
+      colorMode:
+        'Changes the color mode (p5.js). Usage: colorMode(mode, [max1], [max2], [max3], [maxA])',
+      // p5.js specific - Image
+      loadImage:
+        'Loads an image (p5.js). Usage: loadImage(path, [successCallback], [failureCallback])',
+      image:
+        'Draws an image (p5.js). Usage: image(img, x, y, [width], [height])',
+      createImage:
+        'Creates a new p5.Image (p5.js). Usage: createImage(width, height)',
+      // p5.js specific - Control
+      loop: 'Starts the draw() loop (p5.js).',
+      noLoop: 'Stops the draw() loop (p5.js).',
+      redraw: 'Executes draw() once (p5.js). Usage: redraw([n])',
+      // p5.js specific - Vector
+      createVector:
+        'Creates a new p5.Vector (p5.js). Usage: createVector([x], [y], [z])'
     };
 
-    const doc = builtins[expression];
-    if (doc) {
-      return {
-        found: true,
-        data: {
-          'text/plain': `${expression}: ${doc}`,
-          'text/markdown': `**${expression}**\n\n${doc}`
-        },
-        metadata: {}
-      };
-    }
-
-    return {
-      found: false,
-      data: {},
-      metadata: {}
-    };
+    return builtins[expression] ?? null;
   }
 }
