@@ -2,6 +2,29 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## 0.4.0a0
+
+([Full Changelog](https://github.com/jupyterlite/p5-kernel/compare/@jupyterlite/p5-kernel-extension@0.3.0...f487b30076b35d755a9e151d54a10ab8d06357cf))
+
+### Enhancements made
+
+- Build on top of the latest JavaScript kernel [#28](https://github.com/jupyterlite/p5-kernel/pull/28) ([@jtpio](https://github.com/jtpio))
+
+### Maintenance and upkeep improvements
+
+- Fix bump version script [#29](https://github.com/jupyterlite/p5-kernel/pull/29) ([@jtpio](https://github.com/jtpio))
+
+### Contributors to this release
+
+The following people contributed discussions, new ideas, code and documentation contributions, and review.
+See [our definition of contributors](https://github-activity.readthedocs.io/en/latest/use/#how-does-this-tool-define-contributions-in-the-reports).
+
+([GitHub contributors page for this release](https://github.com/jupyterlite/p5-kernel/graphs/contributors?from=2025-12-02&to=2026-03-05&type=c))
+
+@jtpio ([activity](https://github.com/search?q=repo%3Ajupyterlite%2Fp5-kernel+involves%3Ajtpio+updated%3A2025-12-02..2026-03-05&type=Issues))
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## 0.3.0
 
 ([Full Changelog](https://github.com/jupyterlite/p5-kernel/compare/@jupyterlite/p5-kernel-extension@0.2.0...035b4019203c0387a5d52b4fdfaeac7b67731390))
@@ -15,8 +38,6 @@
 ([GitHub contributors page for this release](https://github.com/jupyterlite/p5-kernel/graphs/contributors?from=2025-11-27&to=2025-12-02&type=c))
 
 [@jtpio](https://github.com/search?q=repo%3Ajupyterlite%2Fp5-kernel+involves%3Ajtpio+updated%3A2025-11-27..2025-12-02&type=Issues)
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## 0.3.0alpha0
 
