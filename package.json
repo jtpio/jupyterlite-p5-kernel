@@ -1,7 +1,7 @@
 {
   "name": "@jupyterlite/p5-kernel-root",
   "private": true,
-  "version": "0.4.0-a1",
+  "version": "0.4.0-a2",
   "keywords": [
     "jupyter",
     "jupyterlab",

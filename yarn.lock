@@ -2990,7 +2990,7 @@ __metadata:
   dependencies:
     "@jupyterlab/application": ^4.5.0
     "@jupyterlab/builder": ^4.5.5
-    "@jupyterlite/p5-kernel": ^0.4.0-alpha.1
+    "@jupyterlite/p5-kernel": ^0.4.0-alpha.2
     "@jupyterlite/services": ^0.7.0
     "@types/json-schema": ^7.0.11
     "@types/react": ^18.0.26
@@ -3023,7 +3023,7 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"@jupyterlite/p5-kernel@^0.4.0-alpha.1, @jupyterlite/p5-kernel@workspace:packages/p5-kernel":
+"@jupyterlite/p5-kernel@^0.4.0-alpha.2, @jupyterlite/p5-kernel@workspace:packages/p5-kernel":
   version: 0.0.0-use.local
   resolution: "@jupyterlite/p5-kernel@workspace:packages/p5-kernel"
   dependencies:
